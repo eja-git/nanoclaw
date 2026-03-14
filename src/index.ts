@@ -6,6 +6,7 @@ import {
   CREDENTIAL_PROXY_PORT,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
+  TELEGRAM_BOT_POOL,
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
@@ -38,13 +39,16 @@ import {
   initDatabase,
   setRegisteredGroup,
   setRouterState,
+  deleteSession,
   setSession,
   storeChatMetadata,
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
+import { fixContainerGroupDirOwnership } from './container-runner.js';
 import { startIpcWatcher } from './ipc.js';
+import { initBotPool } from './channels/telegram.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
   restoreRemoteControl,
@@ -112,6 +116,7 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
 
   // Create group folder
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
+  fixContainerGroupDirOwnership(groupDir);
 
   logger.info(
     { jid, name: group.name, folder: group.folder },
@@ -332,6 +337,49 @@ async function runAgent(
     }
 
     if (output.status === 'error') {
+      // If the session no longer exists in Claude Code, clear it and retry fresh
+      if (
+        sessionId &&
+        output.error?.includes('No conversation found with session ID')
+      ) {
+        logger.warn(
+          { group: group.name, sessionId },
+          'Stale session detected, clearing and retrying fresh',
+        );
+        delete sessions[group.folder];
+        deleteSession(group.folder);
+
+        const retryOutput = await runContainerAgent(
+          group,
+          {
+            prompt,
+            sessionId: undefined,
+            groupFolder: group.folder,
+            chatJid,
+            isMain,
+            assistantName: ASSISTANT_NAME,
+          },
+          (proc, containerName) =>
+            queue.registerProcess(chatJid, proc, containerName, group.folder),
+          wrappedOnOutput,
+        );
+
+        if (retryOutput.newSessionId) {
+          sessions[group.folder] = retryOutput.newSessionId;
+          setSession(group.folder, retryOutput.newSessionId);
+        }
+
+        if (retryOutput.status === 'error') {
+          logger.error(
+            { group: group.name, error: retryOutput.error },
+            'Container agent error after session reset',
+          );
+          return 'error';
+        }
+
+        return 'success';
+      }
+
       logger.error(
         { group: group.name, error: output.error },
         'Container agent error',
@@ -595,6 +643,10 @@ async function main(): Promise<void> {
   if (channels.length === 0) {
     logger.fatal('No channels connected');
     process.exit(1);
+  }
+
+  if (TELEGRAM_BOT_POOL.length > 0) {
+    await initBotPool(TELEGRAM_BOT_POOL);
   }
 
   // Start subsystems (independently of connection handler)

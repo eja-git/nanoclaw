@@ -29,6 +29,28 @@ import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
+/**
+ * Make a directory writable by the container's node user.
+ *
+ * In rootless Podman the host user (eric, uid=1000) maps to container uid=0
+ * (root), while the container's node user (uid=1000) maps to a sub-uid on the
+ * host.  Directories created by the host therefore appear owned by root inside
+ * the container.  Both the host process and the container need write access to
+ * several shared dirs (sessions, IPC, agent-runner-src), so rather than
+ * remapping ownership we make them world-writable.
+ */
+export function fixContainerGroupDirOwnership(dirPath: string): void {
+  fixContainerDirOwnership(dirPath);
+}
+
+function fixContainerDirOwnership(dirPath: string): void {
+  try {
+    fs.chmodSync(dirPath, 0o777);
+  } catch (err) {
+    logger.warn({ dirPath, err }, 'Failed to fix container dir permissions');
+  }
+}
+
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
@@ -125,6 +147,7 @@ function buildVolumeMounts(
     '.claude',
   );
   fs.mkdirSync(groupSessionsDir, { recursive: true });
+  fixContainerDirOwnership(groupSessionsDir);
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
   if (!fs.existsSync(settingsFile)) {
     fs.writeFileSync(
@@ -172,6 +195,11 @@ function buildVolumeMounts(
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  // Only chown the subdirs the container writes to — the host process writes
+  // current_tasks.json and available_groups.json to the top-level IPC dir.
+  fixContainerDirOwnership(path.join(groupIpcDir, 'messages'));
+  fixContainerDirOwnership(path.join(groupIpcDir, 'tasks'));
+  fixContainerDirOwnership(path.join(groupIpcDir, 'input'));
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
@@ -195,6 +223,7 @@ function buildVolumeMounts(
   );
   if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
     fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+    fixContainerDirOwnership(groupAgentRunnerDir);
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,
