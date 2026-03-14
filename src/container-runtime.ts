@@ -30,14 +30,20 @@ function detectProxyBindHost(): string {
   // Check /proc filesystem, not env vars — WSL_DISTRO_NAME isn't set under systemd.
   if (fs.existsSync('/proc/sys/fs/binfmt_misc/WSLInterop')) return '127.0.0.1';
 
-  // Rootful Podman: bind to the podman0 bridge IP instead of 0.0.0.0
-  // Rootless Podman uses slirp4netns/pasta — no bridge exists, 0.0.0.0 is the correct fallback.
+  // Rootful Podman: bind to the podman0 bridge IP (only containers can reach it).
   const ifaces = os.networkInterfaces();
   const podman0 = ifaces['podman0'];
   if (podman0) {
     const ipv4 = podman0.find((a) => a.family === 'IPv4');
     if (ipv4) return ipv4.address;
   }
+
+  // Rootless Podman with pasta (transparent mode): containers share the host's LAN IP.
+  // There is no isolated subnet, so the proxy must bind to 0.0.0.0 to be reachable
+  // from containers. Restrict LAN exposure via firewall instead:
+  //   sudo firewall-cmd --add-rich-rule='rule family=ipv4 source NOT address=127.0.0.1 port protocol=tcp port=3001 reject' --permanent
+  //   sudo firewall-cmd --reload
+  // Or set CREDENTIAL_PROXY_HOST in .env to override.
   return '0.0.0.0';
 }
 
@@ -52,7 +58,8 @@ export function readonlyMountArgs(
   hostPath: string,
   containerPath: string,
 ): string[] {
-  return ['-v', `${hostPath}:${containerPath}:ro`];
+  // :ro,z — readonly + SELinux relabeling (required for Podman on enforcing systems)
+  return ['-v', `${hostPath}:${containerPath}:ro,z`];
 }
 
 /** Returns the shell command to stop a container by name. */

@@ -54,6 +54,8 @@ interface VolumeMount {
   hostPath: string;
   containerPath: string;
   readonly: boolean;
+  /** Skip SELinux :z relabeling — required for device files like /dev/null */
+  skipRelabel?: boolean;
 }
 
 function buildVolumeMounts(
@@ -84,6 +86,7 @@ function buildVolumeMounts(
         hostPath: '/dev/null',
         containerPath: '/workspace/project/.env',
         readonly: true,
+        skipRelabel: true,
       });
     }
 
@@ -253,9 +256,14 @@ function buildContainerArgs(
 
   for (const mount of mounts) {
     if (mount.readonly) {
-      args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
+      if (mount.skipRelabel) {
+        args.push('-v', `${mount.hostPath}:${mount.containerPath}:ro`);
+      } else {
+        args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
+      }
     } else {
-      args.push('-v', `${mount.hostPath}:${mount.containerPath}`);
+      // :z — SELinux relabeling (required for Podman on enforcing systems)
+      args.push('-v', `${mount.hostPath}:${mount.containerPath}:z`);
     }
   }
 
