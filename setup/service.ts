@@ -11,6 +11,7 @@ import path from 'path';
 
 import { logger } from '../src/logger.js';
 import {
+  commandExists,
   getPlatform,
   getNodePath,
   getServiceManager,
@@ -254,8 +255,10 @@ WantedBy=${runningAsRoot ? 'multi-user.target' : 'default.target'}`;
   fs.writeFileSync(unitPath, unit);
   logger.info({ unitPath }, 'Wrote systemd unit');
 
-  // Detect stale docker group before starting (user systemd only)
-  const dockerGroupStale = !runningAsRoot && checkDockerGroupStale();
+  // Detect stale docker group before starting (user systemd, Docker only)
+  // Not relevant for Podman (rootless requires no group membership).
+  const dockerGroupStale =
+    !runningAsRoot && commandExists('docker') && checkDockerGroupStale();
   if (dockerGroupStale) {
     logger.warn(
       'Docker group not active in systemd session — user was likely added to docker group mid-session',

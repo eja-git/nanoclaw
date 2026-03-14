@@ -9,16 +9,16 @@ import os from 'os';
 import { logger } from './logger.js';
 
 /** The container runtime binary name. */
-export const CONTAINER_RUNTIME_BIN = 'docker';
+export const CONTAINER_RUNTIME_BIN = 'podman';
 
 /** Hostname containers use to reach the host machine. */
-export const CONTAINER_HOST_GATEWAY = 'host.docker.internal';
+export const CONTAINER_HOST_GATEWAY = 'host.containers.internal';
 
 /**
  * Address the credential proxy binds to.
- * Docker Desktop (macOS): 127.0.0.1 — the VM routes host.docker.internal to loopback.
- * Docker (Linux): bind to the docker0 bridge IP so only containers can reach it,
- *   falling back to 0.0.0.0 if the interface isn't found.
+ * macOS: 127.0.0.1 — Podman Desktop routes host.containers.internal to loopback.
+ * Linux rootful Podman: bind to the podman0 bridge IP so only containers can reach it.
+ * Linux rootless Podman: 0.0.0.0 — containers reach host via slirp4netns/pasta.
  */
 export const PROXY_BIND_HOST =
   process.env.CREDENTIAL_PROXY_HOST || detectProxyBindHost();
@@ -30,11 +30,12 @@ function detectProxyBindHost(): string {
   // Check /proc filesystem, not env vars — WSL_DISTRO_NAME isn't set under systemd.
   if (fs.existsSync('/proc/sys/fs/binfmt_misc/WSLInterop')) return '127.0.0.1';
 
-  // Bare-metal Linux: bind to the docker0 bridge IP instead of 0.0.0.0
+  // Rootful Podman: bind to the podman0 bridge IP instead of 0.0.0.0
+  // Rootless Podman uses slirp4netns/pasta — no bridge exists, 0.0.0.0 is the correct fallback.
   const ifaces = os.networkInterfaces();
-  const docker0 = ifaces['docker0'];
-  if (docker0) {
-    const ipv4 = docker0.find((a) => a.family === 'IPv4');
+  const podman0 = ifaces['podman0'];
+  if (podman0) {
+    const ipv4 = podman0.find((a) => a.family === 'IPv4');
     if (ipv4) return ipv4.address;
   }
   return '0.0.0.0';
@@ -42,10 +43,7 @@ function detectProxyBindHost(): string {
 
 /** CLI args needed for the container to resolve the host gateway. */
 export function hostGatewayArgs(): string[] {
-  // On Linux, host.docker.internal isn't built-in — add it explicitly
-  if (os.platform() === 'linux') {
-    return ['--add-host=host.docker.internal:host-gateway'];
-  }
+  // Podman auto-injects host.containers.internal into all containers — no --add-host needed.
   return [];
 }
 
@@ -85,10 +83,10 @@ export function ensureContainerRuntimeRunning(): void {
       '║  Agents cannot run without a container runtime. To fix:        ║',
     );
     console.error(
-      '║  1. Ensure Docker is installed and running                     ║',
+      '║  1. Ensure Podman is installed (rootless works without daemon)  ║',
     );
     console.error(
-      '║  2. Run: docker info                                           ║',
+      '║  2. Run: podman info                                           ║',
     );
     console.error(
       '║  3. Restart NanoClaw                                           ║',
